@@ -24,21 +24,27 @@ python3 src/main.py
 # assets/ folder will be loaded automatically for images and sounds
 ```
 
+### Resolution
+The game window defaults to **1024×768** pixels.
+
+### Comic-style Filter
+The game applies a real-time comic-book filter (posterization) to emulate Stan Lee comics style. Ensure Pillow is installed (already included in requirements).
+
 ## Assets
 
-Gorilla sprite images can be generated automatically or provided manually.
+Ogre sprite images can be generated automatically or provided manually.
 
-### Generate default sprites
+### Generate default sprites (brown ogres)
 Ensure you have Pillow installed (`pip install Pillow`) and run:
 
 ```bash
 python3 scripts/generate_gorilla_sprites.py
 ```
 
-This will create the following files in `assets/images`:
-- `gorilla_red.png` for Player 1 (red bandana gorilla)
-- `gorilla_blue.png` for Player 2 (blue bandana gorilla)
+This will create the following files in `assets/images` (each **120×120px**), using enhanced shading to emulate a richer 16‑bit art style:
+- `gorilla_red.png` for Player 1 (ogre with red warpaint)
+- `gorilla_blue.png` for Player 2 (ogre with blue warpaint)
 
-### Custom sprites
-Alternatively, place your own square PNG images (around 80×80px) with transparent backgrounds in `assets/images`:
+### Custom ogre sprites
+Alternatively, place your own square PNG images (around 120×120px) with transparent backgrounds in `assets/images`:
 - `gorilla_red.png` and `gorilla_blue.png`
