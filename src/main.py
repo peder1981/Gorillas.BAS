@@ -19,7 +19,7 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
 
-        screen.fill((135, 206, 235))  # sky blue background
+        screen.fill((135, 206, 235))
 
         pygame.display.flip()
         clock.tick(60)
