@@ -3,13 +3,25 @@ import sys
 import math
 import random
 import pygame
+import os
+import time
 from PIL import Image, ImageOps
+
+# Importar módulo de armazenamento
+import game_storage
 
 SCREEN_WIDTH = 1280
 SCREEN_HEIGHT = 720
 FPS = 60
-GRAVITY = 200
-WIND_ACCEL = 20
+# Constantes físicas adequadas para um jogo 2D (sistema simples)
+GRAVITY = 300       # Aceleração da gravidade em pixels/segundo²
+WIND_FACTOR = 20    # Influência do vento em pixels/segundo²
+VEL_FACTOR = 5      # Multiplicador de velocidade inicial (para ajustar "feel" do jogo)
+
+# Constantes para energia dos gorilas
+MAX_GORILLA_HEALTH = 100  # Energia máxima de cada gorila
+DAMAGE_PER_HIT = 35       # Dano causado por acerto direto
+DAMAGE_BUILDING_COLLAPSE = 20  # Dano causado quando prédio desaba
 BUILDING_COLOR = (60, 60, 80)  # Cinza azulado para prédios urbanos
 MONKEY_RADIUS = 7 # Originalmente 6. Aumentado em ~20% (6 * 1.2 = 7.2, arredondado para 7)
 # Cores para o Gorila Realista: tons de cinza/preto.
@@ -172,11 +184,45 @@ def draw_buildings(screen, buildings):
         screen.blit(b["surf"], b["rect"].topleft)
 
 def damage_building(building, center, radius):
-    """Carve a circular hole in the given building surface at center with radius."""
-    local_x = int(center[0] - building["rect"].x)
-    local_y = int(center[1] - building["rect"].y)
-    pygame.draw.circle(building["surf"], (0, 0, 0, 0), (local_x, local_y), radius)
+    """Causa dano (remove pixels) em um prédio a partir de um ponto"""
+    surf = building["surf"]
+    x, y = center[0] - building["rect"].x, center[1] - building["rect"].y
+    # Converter para inteiros para usar no range
+    x_int, y_int = int(x), int(y)
+    radius_int = int(radius)
     
+    # Usar valores inteiros para o range
+    for py in range(max(0, y_int-radius_int), min(surf.get_height(), y_int+radius_int+1)):
+        for px in range(max(0, x_int-radius_int), min(surf.get_width(), x_int+radius_int+1)):
+            # Usar valores originais (float) para o cálculo de distância para maior precisão
+            if math.hypot(px-x, py-y) <= radius:
+                surf.set_at((px, py), (0, 0, 0, 0))
+    
+    return check_building_collapse(building)
+
+def check_building_collapse(building):
+    """Verifica se um prédio tem sustentação ou deve desabar"""
+    surf = building["surf"]
+    width = surf.get_width()
+    height = surf.get_height()
+    
+    # Verificar se a base do prédio foi danificada demais
+    base_intact_pixels = 0
+    base_check_height = min(30, height // 5)  # Verificar os 30 pixels inferiores ou 20% da altura
+    
+    for px in range(width):
+        for py in range(height - base_check_height, height):
+            # Verificar se o pixel ainda existe (não é transparente)
+            if surf.get_at((px, py))[3] > 0:  # Alpha > 0 significa que o pixel é visível
+                base_intact_pixels += 1
+    
+    # Calcular a porcentagem de pixels intactos na base
+    base_total_pixels = width * base_check_height
+    base_intact_percentage = base_intact_pixels / base_total_pixels
+    
+    # Se menos de 30% da base estiver intacta, o prédio deve desabar
+    return base_intact_percentage < 0.3
+
 def create_background():
     """Cria um plano de fundo urbano noturno para o jogo"""
     surf = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
@@ -240,6 +286,55 @@ def create_background():
                         (x, city_y - height_var, width_var, height_var))
     
     return surf
+
+def draw_explosion(screen, pos, progress):
+    """Desenha uma explosão realista e dramática"""
+    x, y = int(pos[0]), int(pos[1])
+    
+    # 1. Núcleo brilhante
+    core_radius = int(EXPLOSION_RADIUS * progress * 0.4)
+    pygame.draw.circle(screen, (255, 255, 220), (x, y), core_radius)
+    
+    # 2. Camada de choque principal
+    main_radius = int(EXPLOSION_RADIUS * progress * 0.8)
+    glow_surf = pygame.Surface((main_radius*2, main_radius*2), pygame.SRCALPHA)
+    for r in range(main_radius, int(main_radius*0.4), -2):
+        alpha = 255 - int((main_radius - r) * (255 / main_radius * 0.7))
+        # Gradiente de cores de explosão (amarelo -> laranja -> vermelho)
+        if r > main_radius * 0.8:
+            color = (255, 255, 150, alpha)  # Amarelo
+        elif r > main_radius * 0.6:
+            color = (255, 200, 50, alpha)   # Laranja amarelado
+        elif r > main_radius * 0.4:
+            color = (255, 100, 20, alpha)   # Laranja
+        else:
+            color = (200, 50, 20, alpha)    # Vermelho
+        pygame.draw.circle(glow_surf, color, (main_radius, main_radius), r)
+    
+    # Aplicar a camada principal
+    screen.blit(glow_surf, (x - main_radius, y - main_radius))
+    
+    # 3. Onda de choque externa
+    outer_radius = int(EXPLOSION_RADIUS * progress)
+    shock_width = int(EXPLOSION_RADIUS * 0.05)
+    shock_color = (200, 200, 200, 100)
+    
+    # Desenhar anel externo
+    shock_surf = pygame.Surface((outer_radius*2, outer_radius*2), pygame.SRCALPHA)
+    pygame.draw.circle(shock_surf, shock_color, (outer_radius, outer_radius), outer_radius)
+    pygame.draw.circle(shock_surf, (0, 0, 0, 0), (outer_radius, outer_radius), outer_radius - shock_width)
+    screen.blit(shock_surf, (x - outer_radius, y - outer_radius))
+    
+    # 4. Partículas (opção simplificada sem rastreamento de partículas individuais)
+    particles_count = 12
+    for i in range(particles_count):
+        angle = math.pi * 2 * i / particles_count
+        dist = EXPLOSION_RADIUS * progress * 0.7
+        particle_x = x + math.cos(angle) * dist
+        particle_y = y + math.sin(angle) * dist
+        size = max(2, int(5 * (1 - progress)))
+        color = random.choice([(100, 100, 100), (80, 80, 80), (60, 60, 60)])
+        pygame.draw.circle(screen, color, (int(particle_x), int(particle_y)), size)
 
 def draw_banana(screen, banana):
     """Desenha uma banana realista com efeito de movimento"""
@@ -323,8 +418,36 @@ def draw_banana(screen, banana):
     # Desenhar a banana principal
     screen.blit(rot, rect)
 
-def draw_monkey(screen, pos, color):
-    """Desenha um gorila musculoso com pelos escuros, buscando um estilo mais realista."""
+def draw_health_bar(screen, pos, health, max_health, width=50, height=5, border=1):
+    """Desenha uma barra de energia acima do gorila"""
+    x, y = pos
+    # Posicionar barra acima do gorila
+    bar_pos = (x - width//2, y - MONKEY_RADIUS * 2.5)
+    
+    # Calcular largura da barra baseada na saúde atual
+    health_percent = max(0, min(health / max_health, 1.0))
+    filled_width = int(width * health_percent)
+    
+    # Definir cores baseadas na porcentagem de saúde
+    if health_percent > 0.7:
+        color = (0, 200, 0)  # Verde
+    elif health_percent > 0.3:
+        color = (200, 200, 0)  # Amarelo
+    else:
+        color = (200, 0, 0)  # Vermelho
+    
+    # Desenhar borda
+    pygame.draw.rect(screen, (50, 50, 50), (bar_pos[0], bar_pos[1], width, height))
+    
+    # Desenhar barra de saúde
+    if health > 0:
+        pygame.draw.rect(screen, color, (bar_pos[0], bar_pos[1], filled_width, height))
+
+def draw_monkey(screen, pos, color, health=MAX_GORILLA_HEALTH):
+    """Desenha um gorila musculoso com pelos escuros, buscando um estilo mais realista.
+    Inclui uma barra de energia acima do gorila."""
+    # Desenhar a barra de energia primeiro
+    draw_health_bar(screen, pos, health, MAX_GORILLA_HEALTH)
     x, y = pos
     radius = MONKEY_RADIUS # radius agora é o novo tamanho aumentado
 
@@ -728,15 +851,260 @@ def apply_comic_filter(surface):
     
     return result
 
-# Remoção da função create_x_logo que não é mais necessária
+# Estados do jogo
+GAME_STATE_MENU = 0
+GAME_STATE_PLAYING = 1
+GAME_STATE_PAUSED = 2
+GAME_STATE_GAME_OVER = 3
+GAME_STATE_HIGH_SCORES = 4
+GAME_STATE_NAME_INPUT = 5
+
+# Opções de menu
+MENU_NEW_GAME = 0
+MENU_CONTINUE = 1
+MENU_HIGH_SCORES = 2
+MENU_QUIT = 3
+
+# Cores para o menu
+MENU_BG_COLOR = (30, 30, 50)  # Azul escuro
+MENU_TEXT_COLOR = (220, 220, 220)  # Branco acinzentado
+MENU_HIGHLIGHT_COLOR = (255, 255, 0)  # Amarelo
+MENU_TITLE_COLOR = (180, 50, 50)  # Vermelho
+
+def draw_menu(screen, font, large_font, selected_option, has_saved_game):
+    """Desenha o menu principal do jogo"""
+    screen.fill(MENU_BG_COLOR)
+    
+    # Título do jogo
+    title = large_font.render("GORILLAS 2.0", True, MENU_TITLE_COLOR)
+    screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 100))
+    
+    # Opções do menu
+    menu_options = [
+        "Novo Jogo",
+        "Continuar" if has_saved_game else "Continuar (Indisponível)",
+        "Recordes",
+        "Sair"
+    ]
+    
+    start_y = SCREEN_HEIGHT // 2 - 50
+    for i, option in enumerate(menu_options):
+        # Opacidade reduzida para opções indisponíveis
+        if i == MENU_CONTINUE and not has_saved_game:
+            color = (100, 100, 100)  # Cinza (desativado)
+        else:
+            color = MENU_HIGHLIGHT_COLOR if i == selected_option else MENU_TEXT_COLOR
+            
+        text = font.render(option, True, color)
+        screen.blit(text, (SCREEN_WIDTH // 2 - text.get_width() // 2, start_y + i * 60))
+    
+    # Instruções
+    instructions = font.render("Use as setas para navegar e ENTER para selecionar", True, MENU_TEXT_COLOR)
+    screen.blit(instructions, (SCREEN_WIDTH // 2 - instructions.get_width() // 2, SCREEN_HEIGHT - 100))
+    
+    pygame.display.flip()
+
+def draw_high_scores(screen, font, large_font, high_scores):
+    """Desenha a tela de recordes"""
+    screen.fill(MENU_BG_COLOR)
+    
+    # Título
+    title = large_font.render("RECORDES", True, MENU_TITLE_COLOR)
+    screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 50))
+    
+    if not high_scores:
+        text = font.render("Nenhum recorde encontrado", True, MENU_TEXT_COLOR)
+        screen.blit(text, (SCREEN_WIDTH // 2 - text.get_width() // 2, SCREEN_HEIGHT // 2))
+    else:
+        # Cabeçalho
+        header = font.render("Posição  Nome              Pontuação  Data", True, MENU_HIGHLIGHT_COLOR)
+        screen.blit(header, (SCREEN_WIDTH // 2 - 200, 150))
+        
+        # Lista de recordes
+        start_y = 200
+        for i, score in enumerate(high_scores[:10]):
+            rank_text = font.render(f"{i+1:<8}", True, MENU_TEXT_COLOR)
+            name_text = font.render(f"{score['name']:<18}", True, MENU_TEXT_COLOR)
+            score_text = font.render(f"{score['score']:<10}", True, MENU_TEXT_COLOR)
+            date_text = font.render(score.get('timestamp', 'N/A'), True, MENU_TEXT_COLOR)
+            
+            screen.blit(rank_text, (SCREEN_WIDTH // 2 - 200, start_y + i * 40))
+            screen.blit(name_text, (SCREEN_WIDTH // 2 - 140, start_y + i * 40))
+            screen.blit(score_text, (SCREEN_WIDTH // 2 + 60, start_y + i * 40))
+            screen.blit(date_text, (SCREEN_WIDTH // 2 + 140, start_y + i * 40))
+    
+    # Instruções
+    instructions = font.render("Pressione ESC para voltar ao menu", True, MENU_TEXT_COLOR)
+    screen.blit(instructions, (SCREEN_WIDTH // 2 - instructions.get_width() // 2, SCREEN_HEIGHT - 50))
+    
+    pygame.display.flip()
+
+def get_player_names(screen, font, large_font):
+    """Tela para inserir nomes dos jogadores"""
+    player1_name = ""
+    player2_name = ""
+    current_player = 0  # 0 para jogador 1, 1 para jogador 2
+    
+    done = False
+    
+    while not done:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return None, None
+            
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    if current_player == 0:
+                        if player1_name.strip():  # Garantir que não seja vazio
+                            current_player = 1
+                    else:
+                        if player2_name.strip():  # Garantir que não seja vazio
+                            done = True
+                            
+                elif event.key == pygame.K_BACKSPACE:
+                    if current_player == 0:
+                        player1_name = player1_name[:-1]
+                    else:
+                        player2_name = player2_name[:-1]
+                        
+                elif event.key == pygame.K_ESCAPE:
+                    return None, None
+                    
+                else:
+                    # Adicionar caractere (limitar a 15 caracteres)
+                    if event.unicode.isprintable():
+                        if current_player == 0 and len(player1_name) < 15:
+                            player1_name += event.unicode
+                        elif current_player == 1 and len(player2_name) < 15:
+                            player2_name += event.unicode
+        
+        # Desenhar tela de entrada de nomes
+        screen.fill(MENU_BG_COLOR)
+        
+        title = large_font.render("Insira os nomes dos jogadores", True, MENU_TITLE_COLOR)
+        screen.blit(title, (SCREEN_WIDTH // 2 - title.get_width() // 2, 100))
+        
+        # Jogador 1
+        p1_label = font.render("Jogador 1 (Vermelho):", True, MONKEY_COLORS[0])
+        p1_text = font.render(player1_name + ("_" if current_player == 0 else ""), True, MENU_TEXT_COLOR)
+        screen.blit(p1_label, (SCREEN_WIDTH // 2 - 200, 250))
+        screen.blit(p1_text, (SCREEN_WIDTH // 2 - 200, 290))
+        
+        # Jogador 2
+        p2_label = font.render("Jogador 2 (Azul):", True, MONKEY_COLORS[1])
+        p2_text = font.render(player2_name + ("_" if current_player == 1 else ""), True, MENU_TEXT_COLOR)
+        screen.blit(p2_label, (SCREEN_WIDTH // 2 - 200, 350))
+        screen.blit(p2_text, (SCREEN_WIDTH // 2 - 200, 390))
+        
+        # Instruções
+        instructions = font.render("Pressione ENTER para confirmar, ESC para voltar", True, MENU_TEXT_COLOR)
+        screen.blit(instructions, (SCREEN_WIDTH // 2 - instructions.get_width() // 2, SCREEN_HEIGHT - 50))
+        
+        pygame.display.flip()
+    
+    return player1_name, player2_name
+
+# Função para salvar o estado atual do jogo
+def save_current_game(buildings, scores, turn, player_pos, player_names):
+    """Salva o estado atual do jogo"""
+    # Converter objetos Rect para dicionários serializáveis
+    serializable_buildings = []
+    for b in buildings:
+        building_copy = {}
+        # Copiar apenas os campos serialiáveis
+        for key, value in b.items():
+            # Ignorar campos que possam conter objetos Surface ou outros não-serializáveis
+            if key not in ['surf', 'image', 'surface']:
+                if key == 'rect':
+                    # Converter Rect para dicionário
+                    rect_dict = {
+                        'x': b['rect'].x,
+                        'y': b['rect'].y,
+                        'width': b['rect'].width,
+                        'height': b['rect'].height
+                    }
+                    building_copy['rect'] = rect_dict
+                else:
+                    # Verificar se o valor é um tipo básico serializável
+                    if isinstance(value, (int, float, str, bool, list, dict, tuple)) or value is None:
+                        building_copy[key] = value
+        
+        # Adicionar cor do prédio (se não estiver presente e for necessário)
+        if 'color' not in building_copy:
+            building_copy['color'] = BUILDING_COLOR
+            
+        serializable_buildings.append(building_copy)
+    
+    game_state = {
+        'buildings': serializable_buildings,
+        'scores': scores,
+        'turn': turn,
+        'player_positions': player_pos,
+        'player_names': player_names,
+        'gravity': GRAVITY
+    }
+    
+    game_storage.save_game_state(game_state)
+
+# Função para carregar o jogo salvo
+def load_saved_game():
+    """Carrega o jogo salvo"""
+    state = game_storage.load_game_state()
+    if not state:
+        return None
+    
+    # Converter dicionários de volta para Rect
+    for b in state['buildings']:
+        rect_dict = b['rect']
+        b['rect'] = pygame.Rect(rect_dict['x'], rect_dict['y'], rect_dict['width'], rect_dict['height'])
+    
+    # Atualizar variável global GRAVITY
+    global GRAVITY
+    GRAVITY = state.get('gravity', GRAVITY)
+    
+    return state
 
 def main():
+    # Declarar que vamos usar a variável global GRAVITY
+    global GRAVITY
+    
     pygame.init()
     screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
     pygame.display.set_caption("Gorillas 2.0")
     clock = pygame.time.Clock()
-
+    
+    # Carregar fontes
     font = pygame.font.SysFont(None, 28)
+    large_font = pygame.font.SysFont(None, 48)
+    
+    # Estado atual do jogo (começa no menu)
+    game_state = GAME_STATE_MENU
+    selected_menu_option = MENU_NEW_GAME
+    
+    # Verificar se existe jogo salvo
+    has_saved_game = game_storage.load_game_state() is not None
+    
+    # Carregar recordes
+    high_scores = game_storage.load_high_scores()
+    
+    # Variáveis para o jogo
+    buildings = None
+    player_pos = None
+    scores = [0, 0]
+    turn = 0
+    banana = None
+    explosion = None
+    angle = 45
+    power = 50
+    wind = random.randint(-10, 10)
+    
+    # Nomes dos jogadores
+    player_names = ["Jogador 1", "Jogador 2"]
+    
+    # Saúde dos gorilas
+    player_health = [MAX_GORILLA_HEALTH, MAX_GORILLA_HEALTH]
+    
+    # Criar fundo do jogo uma única vez
     background = create_background()
 
     # Load gorilla sprites; fallback to primitive drawing if not found
@@ -749,201 +1117,365 @@ def main():
             sprite = None
         gorilla_sprites.append(sprite)
 
-    buildings = generate_buildings()
-    # Posicionar jogadores em prédios mais centrais para evitar cortes nas bordas
-    # Garantir que haja prédios suficientes (pelo menos 5 para esta lógica)
-    if len(buildings) >= 5:
-        p1_building_index = 2 # Terceiro prédio da esquerda
-        p2_building_index = -3 # Terceiro prédio da direita
-    elif len(buildings) >= 3:
-        p1_building_index = 1
-        p2_building_index = -2
-    else: # Caso extremo com poucos prédios
-        p1_building_index = 0
-        p2_building_index = -1
+    def setup_new_game():
+        nonlocal buildings, player_pos, scores, turn, angle, power, wind, banana, explosion, player_health
+        
+        # Gerar novos prédios
+        buildings = generate_buildings()
+        
+        # Posicionar jogadores em prédios mais centrais
+        if len(buildings) >= 5:
+            p1_building_index = 2  # Terceiro prédio da esquerda
+            p2_building_index = -3  # Terceiro prédio da direita
+        elif len(buildings) >= 3:
+            p1_building_index = 1
+            p2_building_index = -2
+        else:  # Caso extremo com poucos prédios
+            p1_building_index = 0
+            p2_building_index = -1
 
-    p1_rect = buildings[p1_building_index]["rect"]
-    p2_rect = buildings[p2_building_index]["rect"]
+        p1_rect = buildings[p1_building_index]["rect"]
+        p2_rect = buildings[p2_building_index]["rect"]
 
-    # Ajustar a altura Y para que os pés dos gorilas fiquem sobre os prédios
-    # MONKEY_RADIUS é o raio, a altura total percebida pode ser ~3x a 3.5x o raio.
-    # Queremos que o y do centro do gorila seja (topo_predio - altura_gorila / 2)
-    # Se altura_total_gorila ~ MONKEY_RADIUS * 3, então y_centro = topo_predio - MONKEY_RADIUS * 1.5
-    offset_y_para_pes_no_predio = MONKEY_RADIUS * 1.5
+        # Ajustar a altura Y para os gorilas sobre os prédios
+        offset_y_para_pes_no_predio = MONKEY_RADIUS * 1.5
 
-    player_pos = [
-        (p1_rect.centerx, p1_rect.top - offset_y_para_pes_no_predio),
-        (p2_rect.centerx, p2_rect.top - offset_y_para_pes_no_predio),
-    ]
+        player_pos = [
+            (p1_rect.centerx, p1_rect.top - offset_y_para_pes_no_predio),
+            (p2_rect.centerx, p2_rect.top - offset_y_para_pes_no_predio),
+        ]
 
-    scores = [0, 0]
-    turn = 0
+        # Resetar valores do jogo
+        scores = [0, 0]
+        turn = 0
+        angle = 45
+        power = 50
+        wind = random.randint(-10, 10)
+        banana = None
+        explosion = None
+        player_health = [MAX_GORILLA_HEALTH, MAX_GORILLA_HEALTH]  # Inicializar saúde dos gorilas
+        
+        return buildings, player_pos, scores, turn, angle, power, wind, banana, explosion, player_health
 
-    angle = 45
-    power = 50
-    wind = random.randint(-10, 10)
-
-    banana = None
-    explosion = None
-
+    # Iniciar no menu principal
+    if has_saved_game:
+        saved_state = load_saved_game()
+    else:
+        saved_state = None
+        
+    # Loop principal do jogo
     running = True
     while running:
         dt = clock.tick(FPS) / 1000.0
+        
+        # Verificação de eventos
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                # Salvar o jogo se estiver em andamento
+                if game_state == GAME_STATE_PLAYING and buildings and player_pos:
+                    save_current_game(buildings, scores, turn, player_pos, player_names)
                 running = False
-            elif event.type == pygame.KEYDOWN and banana is None and explosion is None:
-                if event.key == pygame.K_UP:
-                    angle = min(angle + 1, 180)
-                elif event.key == pygame.K_DOWN:
-                    angle = max(angle - 1, 0)
-                elif event.key == pygame.K_RIGHT:
-                    power = min(power + 1, 100)
-                elif event.key == pygame.K_LEFT:
-                    power = max(power - 1, 0)
-                elif event.key == pygame.K_r:
-                    wind = random.randint(-10, 10)
-                elif event.key == pygame.K_SPACE:
-                    theta = math.radians(angle if turn == 0 else 180 - angle)
-                    speed = power * 2
-                    vx = math.cos(theta) * speed
-                    vy = -math.sin(theta) * speed
-                    banana = {"pos": list(player_pos[turn]), "vel": [vx, vy]}
-
-        if banana:
-            banana["vel"][0] += wind * WIND_ACCEL * dt
-            banana["vel"][1] += GRAVITY * dt
-            banana["pos"][0] += banana["vel"][0] * dt
-            banana["pos"][1] += banana["vel"][1] * dt
-
-            x, y = banana["pos"]
-            if x < 0 or x > SCREEN_WIDTH or y > SCREEN_HEIGHT:
-                banana = None
-                turn = 1 - turn
-                wind = random.randint(-10, 10)
-            else:
-                for b in buildings:
-                    if b["rect"].collidepoint(x, y):
-                        explosion = {"pos": (x, y), "timer": 0}
-                        damage_building(b, (x, y), EXPLOSION_RADIUS)
-                        banana = None
-                        wind = random.randint(-10, 10)
-                        turn = 1 - turn
-                        break
-                if banana:
-                    target = player_pos[1 - turn]
-                    dist = math.hypot(x - target[0], y - target[1])
-                    if dist <= BANANA_RADIUS + MONKEY_RADIUS:
-                        explosion = {"pos": (x, y), "timer": 0}
-                        scores[turn] += 1
-                        banana = None
-                        wind = random.randint(-10, 10)
-                        turn = 1 - turn
-
-        if explosion:
-            explosion["timer"] += dt
-            if explosion["timer"] > EXPLOSION_DURATION:
-                explosion = None
-
-        screen.blit(background, (0, 0))
-        draw_buildings(screen, buildings)
-        # Draw gorillas: sprite if available, else fallback to primitives
-        if gorilla_sprites[0]:
-            rect = gorilla_sprites[0].get_rect(center=player_pos[0])
-            screen.blit(gorilla_sprites[0], rect)
-        else:
-            draw_monkey(screen, player_pos[0], MONKEY_COLORS[0])
-        if gorilla_sprites[1]:
-            rect = gorilla_sprites[1].get_rect(center=player_pos[1])
-            screen.blit(gorilla_sprites[1], rect)
-        else:
-            draw_monkey(screen, player_pos[1], MONKEY_COLORS[1])
-
-        if banana:
-            draw_banana(screen, banana)
-
-        if explosion:
-            t = explosion["timer"] / EXPLOSION_DURATION
-            explosion_x, explosion_y = int(explosion["pos"][0]), int(explosion["pos"][1])
             
-            # Desenhar explosão mais realista e dramática
-            # 1. Núcleo brilhante
-            core_radius = int(EXPLOSION_RADIUS * t * 0.4)
-            pygame.draw.circle(screen, (255, 255, 220), (explosion_x, explosion_y), core_radius)
+            # Processamento de eventos de acordo com o estado do jogo
+            if game_state == GAME_STATE_MENU:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_UP:
+                        selected_menu_option = (selected_menu_option - 1) % 4
+                    elif event.key == pygame.K_DOWN:
+                        selected_menu_option = (selected_menu_option + 1) % 4
+                    elif event.key == pygame.K_RETURN:
+                        if selected_menu_option == MENU_NEW_GAME:
+                            game_state = GAME_STATE_NAME_INPUT
+                        elif selected_menu_option == MENU_CONTINUE and has_saved_game:
+                            # Carregar jogo salvo
+                            state = load_saved_game()
+                            buildings = state['buildings']
+                            scores = state['scores']
+                            turn = state['turn']
+                            player_pos = state['player_positions']
+                            player_names = state.get('player_names', ["Jogador 1", "Jogador 2"])
+                            # Inicializar outros valores
+                            angle = 45
+                            power = 50
+                            wind = random.randint(-10, 10)
+                            banana = None
+                            explosion = None
+                            # Mudar para o estado de jogo
+                            game_state = GAME_STATE_PLAYING
+                        elif selected_menu_option == MENU_HIGH_SCORES:
+                            game_state = GAME_STATE_HIGH_SCORES
+                        elif selected_menu_option == MENU_QUIT:
+                            running = False
             
-            # 2. Camada de choque principal
-            main_radius = int(EXPLOSION_RADIUS * t * 0.8)
-            glow_surf = pygame.Surface((main_radius*2, main_radius*2), pygame.SRCALPHA)
-            for r in range(main_radius, int(main_radius*0.4), -2):
-                alpha = 255 - int((main_radius - r) * (255 / main_radius * 0.7))
-                # Gradiente de cores de explosão (amarelo -> laranja -> vermelho)
-                if r > main_radius * 0.8:
-                    color = (255, 255, 150, alpha)  # Amarelo
-                elif r > main_radius * 0.6:
-                    color = (255, 200, 50, alpha)   # Laranja amarelado
-                elif r > main_radius * 0.4:
-                    color = (255, 100, 20, alpha)   # Laranja
+            elif game_state == GAME_STATE_HIGH_SCORES:
+                if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    game_state = GAME_STATE_MENU
+            
+            elif game_state == GAME_STATE_NAME_INPUT:
+                # Lógica para entrada de nomes é tratada na função get_player_names
+                player1_name, player2_name = get_player_names(screen, font, large_font)
+                if player1_name is not None and player2_name is not None:
+                    player_names = [player1_name, player2_name]
+                    # Inicializar novo jogo
+                    buildings, player_pos, scores, turn, angle, power, wind, banana, explosion, player_health = setup_new_game()
+                    game_state = GAME_STATE_PLAYING
                 else:
-                    color = (200, 50, 20, alpha)    # Vermelho
-                pygame.draw.circle(glow_surf, color, (main_radius, main_radius), r)
+                    game_state = GAME_STATE_MENU
             
-            # Aplicar a camada principal
-            screen.blit(glow_surf, (explosion_x - main_radius, explosion_y - main_radius))
-            
-            # 3. Onda de choque externa
-            outer_radius = int(EXPLOSION_RADIUS * t)
-            shock_width = int(EXPLOSION_RADIUS * 0.05)
-            shock_color = (200, 200, 200, 100)
-            
-            # Desenhar anel externo
-            shock_surf = pygame.Surface((outer_radius*2, outer_radius*2), pygame.SRCALPHA)
-            pygame.draw.circle(shock_surf, shock_color, (outer_radius, outer_radius), outer_radius)
-            pygame.draw.circle(shock_surf, (0, 0, 0, 0), (outer_radius, outer_radius), outer_radius - shock_width)
-            screen.blit(shock_surf, (explosion_x - outer_radius, explosion_y - outer_radius))
-            
-            # 4. Partículas de detritos
-            if "particles" not in explosion:
-                # Criar partículas quando a explosão começa
-                explosion["particles"] = []
-                particles_count = 20
-                for _ in range(particles_count):
-                    angle = random.uniform(0, math.pi * 2)
-                    speed = random.uniform(EXPLOSION_RADIUS/4, EXPLOSION_RADIUS/2)
-                    size = random.randint(2, 5)
-                    particle = {
-                        "pos": [explosion_x, explosion_y],
-                        "vel": [math.cos(angle) * speed, math.sin(angle) * speed],
-                        "size": size,
-                        "color": random.choice([(100, 100, 100), (80, 80, 80), (60, 60, 60)])
-                    }
-                    explosion["particles"].append(particle)
-            
-            # Atualizar e desenhar partículas
-            for particle in explosion["particles"]:
-                # Atualizar posição com velocidade * tempo passado
-                particle["pos"][0] += particle["vel"][0] * t * 2
-                particle["pos"][1] += particle["vel"][1] * t * 2
-                # Desenhar partícula
-                pygame.draw.circle(screen, particle["color"], 
-                                 (int(particle["pos"][0]), int(particle["pos"][1])), 
-                                 int(particle["size"] * (1 - t * 0.5)))  # Encolher com o tempo
-
-        # Interface de jogo simples
-        text_color = (255, 255, 255)  # Texto branco para contraste sobre o fundo azul
+            elif game_state == GAME_STATE_PLAYING:
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        # Salvar o jogo antes de ir para o menu
+                        save_current_game(buildings, scores, turn, player_pos, player_names)
+                        game_state = GAME_STATE_MENU
+                    elif banana is None and explosion is None:
+                        if event.key == pygame.K_UP:
+                            angle = min(angle + 1, 180)
+                        elif event.key == pygame.K_DOWN:
+                            angle = max(angle - 1, 0)
+                        elif event.key == pygame.K_RIGHT:
+                            power = min(power + 1, 100)
+                        elif event.key == pygame.K_LEFT:
+                            power = max(power - 1, 0)
+                        elif event.key == pygame.K_r:
+                            wind = random.randint(-10, 10)
+                        # Controles para modificar a gravidade
+                        elif event.key == pygame.K_g:
+                            GRAVITY += 50  # Incremento adequado para o sistema 2D
+                        elif event.key == pygame.K_h:
+                            GRAVITY = max(50, GRAVITY - 50)  # Impede gravidade muito baixa
+                        elif event.key == pygame.K_t:
+                            GRAVITY = 300  # Restaura para o valor padrão do jogo
+                        elif event.key == pygame.K_SPACE:
+                            # Calcula ângulo de lançamento (inverte para o segundo jogador)
+                            theta = math.radians(angle if turn == 0 else 180 - angle)
+                            
+                            # Velocidade inicial baseada na potência selecionada
+                            speed = power * VEL_FACTOR
+                            
+                            # Calcula componentes da velocidade
+                            vx = math.cos(theta) * speed
+                            vy = -math.sin(theta) * speed  # Negativo porque Y aumenta para baixo
+                            
+                            # Adiciona deslocamento inicial para evitar colisão imediata
+                            start_pos = list(player_pos[turn])
+                            offset_x = math.cos(theta) * (MONKEY_RADIUS + BANANA_RADIUS + 5)
+                            offset_y = -math.sin(theta) * (MONKEY_RADIUS + BANANA_RADIUS + 5)
+                            start_pos[0] += offset_x
+                            start_pos[1] += offset_y
+                            
+                            banana = {
+                                "pos": start_pos, 
+                                "vel": [vx, vy],
+                                "owner": turn,
+                                "time_alive": 0
+                            }
         
-        angle_surf = font.render(f"Turno: Jogador {turn+1}", True, text_color)
-        angle_val = font.render(f"Ângulo: {angle}", True, text_color)
-        power_val = font.render(f"Poder: {power}", True, text_color)
-        wind_val = font.render(f"Vento: {wind}", True, text_color)
-        score_val = font.render(f"{scores[0]} - {scores[1]}", True, text_color)
-        instr = font.render("CIMA/BAIXO: Ângulo  ESQ/DIR: Poder  R: Vento  ESPAÇO: Disparar", True, text_color)
+        # Atualização da lógica do jogo baseada no estado atual
+        if game_state == GAME_STATE_PLAYING:
+            # Lógica da banana
+            if banana:
+                # Atualizar contador de tempo de vida e física
+                banana["time_alive"] += dt
+                banana["vel"][0] += wind * WIND_FACTOR * dt
+                banana["vel"][1] += GRAVITY * dt
+                banana["pos"][0] += banana["vel"][0] * dt
+                banana["pos"][1] += banana["vel"][1] * dt
 
-        screen.blit(angle_surf, (10, 10))
-        screen.blit(angle_val, (10, 40))
-        screen.blit(power_val, (10, 70))
-        screen.blit(wind_val, (10, 100))
-        screen.blit(score_val, (SCREEN_WIDTH - 100, 10))
-        screen.blit(instr, (10, SCREEN_HEIGHT - 60))
+                x, y = banana["pos"]
+                # Verificar se a banana saiu da tela
+                if x < 0 or x > SCREEN_WIDTH or y > SCREEN_HEIGHT:
+                    banana = None
+                    turn = 1 - turn
+                    wind = random.randint(-10, 10)
+                else:
+                    # Verificar colisão com os prédios
+                    for i, b in enumerate(buildings):
+                        if b["rect"].collidepoint(x, y):
+                            explosion = {"pos": (x, y), "timer": 0}
+                            # Verificar se o prédio vai desabar após o dano
+                            building_collapse = damage_building(b, (x, y), EXPLOSION_RADIUS)
+                            
+                            if building_collapse:
+                                # Prédio desabando!
+                                # Verificar se algum gorila está no prédio que está desabando
+                                for player_idx, pos in enumerate(player_pos):
+                                    if b["rect"].collidepoint(pos[0], pos[1]):
+                                        # Gorila está no prédio que desabou - sofre dano
+                                        player_health[player_idx] -= DAMAGE_BUILDING_COLLAPSE
+                                        # Criar explosão secundária na posição do gorila
+                                        explosion = {"pos": pos, "timer": 0}
+                                
+                                # Remover o prédio do jogo
+                                buildings[i]["collapsed"] = True
+                            
+                            banana = None
+                            wind = random.randint(-10, 10)
+                            turn = 1 - turn
+                            break
+                            
+                    if banana:
+                        # Verificar colisão com o gorila adversário
+                        target_idx = 1 - banana["owner"]
+                        target = player_pos[target_idx]
+                        dist = math.hypot(x - target[0], y - target[1])
+                        if dist <= BANANA_RADIUS + MONKEY_RADIUS:
+                            # Salvar referências importantes antes de limpar a banana
+                            banana_owner = banana["owner"]
+                            explosion = {"pos": (x, y), "timer": 0}
+                            banana = None
+                            
+                            # Reduzir a energia do gorila atingido
+                            player_health[target_idx] -= DAMAGE_PER_HIT
+                            
+                            # Verificar se o gorila foi derrotado (energia <= 0)
+                            if player_health[target_idx] <= 0:
+                                # Gorila derrotado! Quem lançou ganha ponto
+                                scores[banana_owner] += 1
+                                
+                                # Salvar recordes
+                                players_scores = [
+                                    {"name": player_names[0], "score": scores[0]},
+                                    {"name": player_names[1], "score": scores[1]}
+                                ]
+                                game_storage.save_high_scores(players_scores)
+                                high_scores = game_storage.load_high_scores()
+                                
+                                # Exibir mensagem de vitória
+                                victory_screen_start = time.time()
+                                winner_text = f"{player_names[banana['owner']]} venceu!"
+                                defeat_text = f"{player_names[target_idx]} ficou sem energia!"
+                                victory_font = pygame.font.SysFont(None, 72)
+                                victory_surf = victory_font.render(winner_text, True, MONKEY_COLORS[banana['owner']])
+                                defeat_surf = victory_font.render(defeat_text, True, (255, 50, 50))
+                                screen.blit(defeat_surf, (SCREEN_WIDTH // 2 - defeat_surf.get_width() // 2, SCREEN_HEIGHT // 2 - 100))
+                                screen.blit(victory_surf, (SCREEN_WIDTH // 2 - victory_surf.get_width() // 2, SCREEN_HEIGHT // 2 - 20))
+                                pygame.display.flip()
+                                pygame.time.delay(3000)  # Mostrar por 3 segundos
+                                
+                                # Voltar para o menu principal
+                                game_state = GAME_STATE_MENU
+                            else:
+                                # Gorila ainda tem energia, continuar o jogo
+                                wind = random.randint(-10, 10)
+                                turn = 1 - turn
+                        
+                        # Verificar colisão com o próprio gorila (autodestruição)
+                        # Só permitir após 0.5 segundos
+                        if banana["time_alive"] > 0.5:
+                            self_idx = banana["owner"]
+                            self_pos = player_pos[self_idx]
+                            self_dist = math.hypot(x - self_pos[0], y - self_pos[1])
+                            if self_dist <= BANANA_RADIUS + MONKEY_RADIUS:
+                                # Salvar referências importantes antes de limpar a banana
+                                explosion = {"pos": (x, y), "timer": 0}
+                                banana = None
+                                
+                                # Reduzir a energia do gorila que acertou a si mesmo
+                                # Fazer o dano por auto-destruição ser maior (dano x 1.5)
+                                player_health[self_idx] -= int(DAMAGE_PER_HIT * 1.5)
+                                
+                                # Verificar se o gorila foi derrotado (energia <= 0)
+                                if player_health[self_idx] <= 0:
+                                    # Gorila derrotado! Adversário ganha ponto
+                                    winner_idx = 1 - self_idx
+                                    scores[winner_idx] += 1
+                                    
+                                    # Salvar recordes
+                                    players_scores = [
+                                        {"name": player_names[0], "score": scores[0]},
+                                        {"name": player_names[1], "score": scores[1]}
+                                    ]
+                                    game_storage.save_high_scores(players_scores)
+                                    high_scores = game_storage.load_high_scores()
+                                    
+                                    # Exibir mensagem de vitória
+                                    victory_screen_start = time.time()
+                                    loser_text = f"{player_names[self_idx]} destruiu a si mesmo!"
+                                    winner_text = f"{player_names[winner_idx]} venceu!"
+                                    victory_font = pygame.font.SysFont(None, 72)
+                                    loser_surf = victory_font.render(loser_text, True, (255, 50, 50))
+                                    winner_surf = victory_font.render(winner_text, True, MONKEY_COLORS[winner_idx])
+                                    screen.blit(loser_surf, (SCREEN_WIDTH // 2 - loser_surf.get_width() // 2, SCREEN_HEIGHT // 2 - 100))
+                                    screen.blit(winner_surf, (SCREEN_WIDTH // 2 - winner_surf.get_width() // 2, SCREEN_HEIGHT // 2))
+                                    pygame.display.flip()
+                                    pygame.time.delay(3000)  # Mostrar por 3 segundos
+                                    
+                                    # Voltar para o menu principal
+                                    game_state = GAME_STATE_MENU
+                                else:
+                                    # Gorila ainda tem energia, continuar o jogo
+                                    wind = random.randint(-10, 10)
+                                    turn = 1 - turn
+
+            # Lógica de explosão
+            if explosion:
+                explosion["timer"] += dt
+                if explosion["timer"] > EXPLOSION_DURATION:
+                    # Remover apenas a explosão, sem lógica adicional
+                    # A partida só termina quando acerta um gorila
+                    explosion = None
+
+        # Renderização baseada no estado atual do jogo
+        if game_state == GAME_STATE_MENU:
+            # Desenhar menu principal
+            draw_menu(screen, font, large_font, selected_menu_option, has_saved_game)
+            
+        elif game_state == GAME_STATE_HIGH_SCORES:
+            # Desenhar tela de recordes
+            draw_high_scores(screen, font, large_font, high_scores)
+            
+        elif game_state == GAME_STATE_PLAYING and buildings and player_pos:
+            # Desenhar o jogo em andamento
+            screen.blit(background, (0, 0))
+            draw_buildings(screen, buildings)
+            
+            # Desenhar gorilas: sprite se disponível, ou versão primitiva
+            if gorilla_sprites[0]:
+                rect = gorilla_sprites[0].get_rect(center=player_pos[0])
+                screen.blit(gorilla_sprites[0], rect)
+                # Adicionar barra de energia acima do sprite
+                draw_health_bar(screen, player_pos[0], player_health[0], MAX_GORILLA_HEALTH)
+            else:
+                draw_monkey(screen, player_pos[0], MONKEY_COLORS[0], player_health[0])
+                
+            if gorilla_sprites[1]:
+                rect = gorilla_sprites[1].get_rect(center=player_pos[1])
+                screen.blit(gorilla_sprites[1], rect)
+                # Adicionar barra de energia acima do sprite
+                draw_health_bar(screen, player_pos[1], player_health[1], MAX_GORILLA_HEALTH)
+            else:
+                draw_monkey(screen, player_pos[1], MONKEY_COLORS[1], player_health[1])
+
+        # Renderizar elementos do jogo apenas quando estivermos jogando
+        if game_state == GAME_STATE_PLAYING:
+            if banana:
+                draw_banana(screen, banana)
+                
+            if explosion:
+                draw_explosion(screen, explosion["pos"], explosion["timer"] / EXPLOSION_DURATION)
+                
+            # Interface de jogador atual
+            turn_text = font.render(f"Turno: {player_names[turn]}", True, MONKEY_COLORS[turn])
+            screen.blit(turn_text, (10, 10))
+            
+            # Informações de jogo
+            text_angle = font.render(f"Ângulo: {angle}", True, (255, 255, 255))
+            text_power = font.render(f"Força: {power}", True, (255, 255, 255))
+            text_wind = font.render(f"Vento: {wind:+d}", True, (255, 255, 255))
+            text_gravity = font.render(f"Gravidade: {GRAVITY} (G/H para alterar, T para reset)", True, (255, 255, 255))
+            text_score = font.render(f"Placar: {player_names[0]} {scores[0]} - {scores[1]} {player_names[1]}", True, (255, 255, 255))
+            
+            # Instruções
+            instr = font.render("CIMA/BAIXO: Ângulo | ESQ/DIR: Força | R: Vento | ESC: Menu | ESPAÇO: Lançar", True, (255, 255, 255))
+
+            # Exibir textos na tela
+            screen.blit(text_angle, (10, 40))
+            screen.blit(text_power, (10, 70))
+            screen.blit(text_wind, (10, 100))
+            screen.blit(text_gravity, (10, 130))
+            screen.blit(text_score, (SCREEN_WIDTH - 350, 10))
+            screen.blit(instr, (10, SCREEN_HEIGHT - 30))
 
         screen.blit(apply_comic_filter(screen), (0, 0))
         pygame.display.flip()

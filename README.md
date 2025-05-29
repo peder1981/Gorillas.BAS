@@ -1,22 +1,37 @@
  # Gorilla 2.0
 
- Modern reinterpretation of the classic QBASIC game Gorillas.BAS.
+Modern reinterpretation of the classic QBASIC game Gorillas.BAS.
 
- ## Stack
- Python + Pygame
+## Stack
+Python + Pygame
 
-- ## MVP
+## Funcionalidades
+
+### Mecânicas Básicas
 - Local two-player duel with turn-based throwing of explosive bananas
 - Adjustable angle, power, and wind settings
 - Basic physics simulation with gravity and wind
-- Score tracking and round reset
+- Score tracking and round management
+
+### Sistema de Energia e Dano
+- Cada gorila possui uma barra de energia que diminui quando atingido
+- Sistema visual de barras de energia com código de cores (verde, amarelo, vermelho)
+- Diferentes tipos de dano:
+  - Acerto direto: 35 pontos de dano
+  - Auto-destruição: 52 pontos de dano (150% do dano normal)
+  - Desabamento de prédio: 20 pontos de dano
+
+### Prédios e Ambiente
+- Prédios desabam quando perdem sustentação (menos de 30% da base intacta)
+- Ambiente urbano com prédios gerados proceduralmente
+- Efeitos de explosão e colisão realistas
 
 ## Setup
- ```bash
- python3 -m venv venv
- source venv/bin/activate
- pip install -r requirements.txt
- ```
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
 
  ## Running
 ```bash
